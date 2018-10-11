@@ -36,7 +36,7 @@ To build out our course deployment feature, we'll need the following constructs:
 The relationship between these entities looks something like this:
 
 
-![](./course-deploy-architecture.png)
+![](./course-deploy-1.png)
 
 The `CourseWorker` server tells the `StudenRepoWorkers` what to do and when to do it. And it passes messages back to the `CourseState` server at each step of the process.
 
