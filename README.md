@@ -19,7 +19,7 @@ Taking _all_ of the repos that represent a given course and copying them over in
 
 To solve our speed issue, we wanted something that would provide concurrency. To ensure that an error creating one student repo would be properly handled and not prevent the rest of the student repos from being created, we wanted something fault tolerant. Lastly, we wanted a tool that makes it easy to track the progress, success and failure of a given student repo and report on the overall state of the course's deployment to a class.
 
-Elixir absolutely fit the bill. By leveraging Dynamic Supervisors and GenServers we can concurrently "deploy" lots and lots of repos, gracefully handle any errors that might occur for a given repo deployment and track each individual deployment process to be reported on later.
+Elixir absolutely fits the bill. By leveraging Dynamic Supervisors and GenServers we can concurrently "deploy" lots and lots of repos, gracefully handle any errors that might occur for a given repo deployment and track each individual deployment process to be reported on later.
 
 Keep reading to see exactly how we did it!
 
@@ -36,7 +36,7 @@ To build out our course deployment feature, we'll need the following constructs:
 The relationship between these entities looks something like this:
 
 
-![](./course-deploy-1.png)
+![](./images/course-deploy-architecture.png)
 
 The `CourseWorker` server tells the `StudenRepoWorkers` what to do and when to do it. And it passes messages back to the `CourseState` server at each step of the process.
 
@@ -93,11 +93,10 @@ defmodule CourseWorker do
   end
 
   def init(args) do
-    send(self(), :deploy_course)
-    {:ok, }
+    {:ok, %{}}
   end
 
-  def handle_info(:deploy_course, state) do
+  def handle_continue(:init, state) do
     # coming soon!
     {:noreply, state}
   end
@@ -107,7 +106,7 @@ end
 Our `CourseWorker` server starts up by doing two things:
 
 1. Storing the state server PID and course params in its _own_ internal state.
-2. Kicking off the course deployment code flow (coming soon!)
+2. Kicking off the course deployment code flow (coming soon!) via its `handle_continue` callback function.
 
 Now that our first two GenServers have been born, let's build a supervisor to start them up.
 
@@ -151,8 +150,7 @@ defmodule CourseSupervisor do
   end
 
   defp supervise_state_server do
-    spec = %{id: CourseState, start: {DeployState, :start_link, []}}
-    DynamicSupervisor.start_child(__MODULE__, spec)
+    DynamicSupervisor.start_child(__MODULE__, {CourseState, []})
   end
 
   defp supervise_worker_server(state_pid, course_params) do
@@ -176,7 +174,7 @@ This is intentional. If the course deployment processes crashes, we can let it c
 
 Further, the `CourseWorker` GenServer is not meant to be a long-running process. The supervisor starts up one such process for each course deployment. Once a course is successfully deployed to a class of students, we will terminate the GenServer process. We _don't_ want our supervisor to continue to restart such processes.
 
-The state server, on the other hand, should be restarted if it crashes, so we do not specify a "temporary" restart value.
+The state server, on the other hand, should be restarted if it crashes, so we do not specify a "temporary" restart value. We should keep in mind that a crashes state server process would mean the loss of that process' state. We don't want that to happen, so we might consider storing the state in an ETS table, among other solutions. We won't get into that here, but we are aware of this consideration.
 
 Now that our supervisor knows how to start its children, let's teach the app to start our supervisor.
 
@@ -192,15 +190,20 @@ def start(_type, _args) do
   import Supervisor.Spec
   children = [
     supervisor(Curriculum.Repo, []),
-    %{
-      id: Curriculum.CourseSupervisor,
-      start: {Curriculum.CourseSupervisor, :start_link, [[]]}
-    }
+    supervisor(Curriculum.CourseSupervisor, [[]])
   ]
   opts = [strategy: :one_for_one, name: Curriculum.Supervisor]
   Supervisor.start_link(children, opts)
 end
 ```
+
+Let's take a closer look at this line:
+
+```elixir
+supervisor(Curriculum.CourseSupervisor, [[]])
+```
+
+This calls `start_link` on `Curriculum.CourseSupervisor` with an argument of whatever is contained in the list that is the second argument to `supervisor`. _We need a value here_, so we gave it an empty list. This is because `DynamicSupervisor` does not implement a `start_link/0` function. It implements a `start_link/1` function. We need to conform to this API so we'll start up our supervisor with an empty list.
 
 #### Starting the GenServers
 
@@ -384,7 +387,6 @@ defmodule StudentRepoWorker
   end
 
   def init([canonical_repo, course_worker_pid]) do
-    send(self(), :deploy_student_repo)
     {:ok,
       %{
         canonical_repo: canonical_repo, course_worker_pid: course_worker_pid
@@ -392,14 +394,14 @@ defmodule StudentRepoWorker
     }
   end
 
-  def handle_info(:deploy_student_repo, state) do
+  def continue(:init, state) do
     StudentRepoDeployer.deploy_student_repo(state[:canonical_repo, self()])
     {:noreply, state}
   end
 end
 ```
 
-When the GenServer starts, it sends the `:deploy_student_repo` message. Our server responds to that message by calling on the `StudentRepoDeployer` helper module. This is the module that knows how to create student repos. Our server passes its own PID to the helper module so that the module can send messages back to the server when a repo has finished deploying.
+The GenServer starts up and establishes an initial state. Then, the [`handle_continue/2`](https://hexdocs.pm/elixir/GenServer.html#c:handle_continue/2) callback fires. Our `handle_continue` function calls on the `StudentRepoDeployer` helper module. This is the module that knows how to create student repos. Our server passes its own PID to the helper module so that the module can send messages back to the server when a repo has finished deploying.
 
 `StudentRepoDeployer` creates the new GitHub repo and passes the message regarding the success or failure of this process back to the `StudentRepoWorker` process.
 
@@ -635,3 +637,4 @@ In this manner, we can tell one GenServer to start a concurrent set of server pr
 Not only did our Dynamic Supervisor/GenServer architecture allow for concurrent workflows, it provided us a way to build fault tolerance into those workflows. We separated out the work of managing the deployment of the entire course from the work of creating an individual student repo *and* we separated out the state tracking mechanism from both of these pieces of work. That meant that we could catch errors or crashes in a given worker process, ensure that any such errors didn't effect the processing of the other student repos, *and* update the separate state management system appropriately.
 
 All in all, we created a fast and resilient system to enact a critical process for our organization.
+
